@@ -203,7 +203,18 @@ func TestV3CompletionHTTPExpiry(t *testing.T) {
 		t.Fatal(e)
 	}
 	s.Host = listener.Addr().String()
-	srv := &http.Server{Handler: s}
+	processDone := make(chan struct{}, 2)
+	downloadDone := make(chan struct{}, 1)
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.ServeHTTP(w, r)
+		// ServeHTTP returns only after its deferred admission lease release.
+		switch r.URL.Path {
+		case "/api/process":
+			processDone <- struct{}{}
+		case "/api/download":
+			downloadDone <- struct{}{}
+		}
+	})}
 	done := make(chan struct{})
 	go func() { _ = srv.Serve(listener); close(done) }()
 	t.Cleanup(func() { _ = srv.Close(); <-done })
@@ -214,6 +225,14 @@ func TestV3CompletionHTTPExpiry(t *testing.T) {
 	nanos.Store(start.Add(jobs.Lifetime - time.Second).UnixNano())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	waitHandler := func(done <-chan struct{}, name string) {
+		t.Helper()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			t.Fatalf("%s handler did not complete: %v", name, ctx.Err())
+		}
+	}
 	r, e := http.NewRequestWithContext(ctx, "POST", "http://"+s.Host+"/api/process", strings.NewReader(`{}`))
 	if e != nil {
 		t.Fatal(e)
@@ -256,6 +275,7 @@ func TestV3CompletionHTTPExpiry(t *testing.T) {
 	if got.err != nil || got.status != 200 {
 		t.Fatalf("processing %d %s %v", got.status, got.body, got.err)
 	}
+	waitHandler(processDone, "process")
 	after := completionCapture(t, s, tok)
 	if after.job != before.job || string(after.original) != string(before.original) || string(after.snapshot) == string(before.snapshot) {
 		t.Fatal("unexpected publication")
@@ -284,6 +304,7 @@ func TestV3CompletionHTTPExpiry(t *testing.T) {
 	if e != nil || downloadResponse.StatusCode != 200 || string(downloadBody) != "name\n\" secret \"\n" {
 		t.Fatalf("subsequent HTTP download: %d %q %v", downloadResponse.StatusCode, downloadBody, e)
 	}
+	waitHandler(downloadDone, "download")
 	// Advance to just before the refreshed boundary without performing a refreshing operation.
 	finished := start.Add(jobs.Lifetime + time.Second)
 	nanos.Store(finished.Add(jobs.Lifetime - time.Nanosecond).UnixNano())
@@ -311,6 +332,7 @@ func TestV3CompletionHTTPExpiry(t *testing.T) {
 	}
 	b, _ := io.ReadAll(res.Body)
 	res.Body.Close()
+	waitHandler(processDone, "expired process")
 	if res.StatusCode != 401 || calls != 0 || !strings.Contains(string(b), "invalid_or_expired_job") {
 		t.Fatalf("boundary %d %s calls %d", res.StatusCode, b, calls)
 	}
