@@ -25,6 +25,9 @@ type rawConn struct {
 }
 
 func startRaw(t *testing.T) *rawServer {
+	return startRawWithHandler(t, nil)
+}
+func startRawWithHandler(t *testing.T, wrap func(http.Handler) http.Handler) *rawServer {
 	t.Helper()
 	l, e := net.Listen("tcp4", "127.0.0.1:0")
 	if e != nil {
@@ -32,6 +35,9 @@ func startRaw(t *testing.T) *rawServer {
 	}
 	m := jobs.New(nil)
 	s := HTTPServer(m, l.Addr().String(), context.Background())
+	if wrap != nil {
+		s.Handler = wrap(s.Handler)
+	}
 	done := make(chan struct{})
 	go func() { _ = s.Serve(l); close(done) }()
 	t.Cleanup(func() { _ = s.Close(); <-done; m.Close() })

@@ -124,19 +124,63 @@ func v2Published(t *testing.T, m *jobs.Manager, token string) *jobs.Snapshot {
 	}
 	return snapshot
 }
+
+// The upload handler reads its body only after acquiring the admission lease.
+type v2ObservedBody struct {
+	io.ReadCloser
+	once    sync.Once
+	reading chan struct{}
+}
+
+func (b *v2ObservedBody) Read(p []byte) (int, error) {
+	b.once.Do(func() { close(b.reading) })
+	return b.ReadCloser.Read(p)
+}
+
 func TestV2UploadDisconnect(t *testing.T) {
 	v2ObserveTemp(t)
 	for _, part := range []struct{ name, body string }{{"part_headers", "--b\r\nContent-Disposition: form-data; name=\"file\""}, {"csv_data", "--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"x.csv\"\r\n\r\ncol\nincomplete"}, {"near_end", strings.TrimSuffix(rawMultipartBody(), "--b--\r\n") + "--b-"}} {
 		t.Run(part.name, func(t *testing.T) {
-			s := startRaw(t)
+			reading := make(chan struct{})
+			s := startRawWithHandler(t, func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Header.Get("X-Test-Observe-Upload") == "yes" {
+						r.Body = &v2ObservedBody{ReadCloser: r.Body, reading: reading}
+					}
+					next.ServeHTTP(w, r)
+				})
+			})
 			tok := s.fixture()
 			v2WaitNotBusy(t, s, tok)
 			before := v2Snapshot(t, s, tok)
 			published := v2Published(t, s.manager, tok)
 			c := s.dial()
-			c.send(t, fmt.Sprintf("POST /api/upload HTTP/1.1\r\nHost: %s\r\nOrigin: http://%s\r\nContent-Type: multipart/form-data; boundary=b\r\nContent-Length: %d\r\n\r\n%s", s.addr, s.addr, len(part.body)+100, part.body))
+			c.send(t, fmt.Sprintf("POST /api/upload HTTP/1.1\r\nHost: %s\r\nOrigin: http://%s\r\nX-Test-Observe-Upload: yes\r\nContent-Type: multipart/form-data; boundary=b\r\nContent-Length: %d\r\n\r\n%s", s.addr, s.addr, len(part.body)+100, part.body))
+			response := make(chan string, 1)
+			go func() {
+				r, err := http.ReadResponse(c.r, &http.Request{Method: "POST"})
+				if err != nil {
+					response <- err.Error()
+					return
+				}
+				defer r.Body.Close()
+				response <- r.Status
+			}()
+			select {
+			case <-reading:
+			case result := <-response:
+				t.Fatalf("upload rejected or ended before admission: %s", result)
+			case <-time.After(5 * time.Second):
+				t.Fatal("upload did not begin reading after admission")
+			}
+			// Once the upload is admitted, verify that another operation is refused.
 			v2WaitBusy(t, s, tok)
 			_ = c.Close()
+			select {
+			case <-response:
+			case <-time.After(5 * time.Second):
+				t.Fatal("upload response reader did not exit after disconnect")
+			}
 			if got := v2WaitDownload(t, s, tok); got != before {
 				t.Fatalf("prior snapshot changed: %q", got)
 			}
