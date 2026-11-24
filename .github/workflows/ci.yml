@@ -1,0 +1,74 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+env:
+  GOTOOLCHAIN: local
+jobs:
+  ubuntu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version: '1.27.4'
+          cache: false
+      - run: uname -a; go version; go env GOOS GOARCH CGO_ENABLED
+      - run: go test -count=1 -timeout=180s ./...
+      - run: go vet ./...
+      - run: go build -buildvcs=false ./...
+      - run: go test -race -count=1 -timeout=240s ./...
+      - run: bash scripts/ci-smoke.sh
+  fedora:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container: fedora:45@sha256:a7d72ba2745b100a3351087472e5ee7b2450af7cf331e7673007e3817612839c
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install prerequisites
+        run: dnf install -y git tar gzip curl ca-certificates
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version: '1.27.4'
+          cache: false
+      - run: |
+          echo "Configured image: fedora:45@sha256:a7d72ba2745b100a3351087472e5ee7b2450af7cf331e7673007e3817612839c"
+          cat /etc/os-release
+          uname -a
+          go version
+          go env GOOS GOARCH
+      - run: go test -count=1 -timeout=180s ./...
+      - run: go vet ./...
+      - run: go build -buildvcs=false ./...
+      - run: bash scripts/ci-smoke.sh
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version: '1.27.4'
+          cache: false
+      - run: |
+          go version
+          go env GOOS GOARCH
+          Write-Host 'Unix process signal tests excluded; Windows Ctrl+C graceful shutdown requires separate evidence.'
+      - run: go test -count=1 -timeout=180s ./...
+      - run: go build -buildvcs=false ./...
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version: '1.27.4'
+          cache: false
+      - run: uname -a; go version; go env GOOS GOARCH
+      - run: go test -count=1 -timeout=180s ./...
+      - run: go build -buildvcs=false ./...

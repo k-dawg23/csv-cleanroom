@@ -1,0 +1,29 @@
+# Local executables and build output
+/csv-cleanroom
+/csv-cleanroom.exe
+/bin/
+/build/
+/dist/
+*.test
+*.test.exe
+
+# Test and coverage output
+coverage.out
+*.coverprofile
+*.prof
+
+# Local configuration, logs, and temporary files
+.env
+.env.*
+!.env.example
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
